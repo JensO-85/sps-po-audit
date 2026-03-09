@@ -66,15 +66,40 @@ export async function parseBuyPlan(buffer: Buffer): Promise<ParsedBuyPlan> {
   if (!ws) throw new Error("Buy Plan Excel has no worksheets")
 
   // ── 1. Find the column-header row ─────────────────────────────────────────
-  //   Scan every row until we find one whose cells contain "Vendor Style #".
+  //   Scan every row until we find one whose cells contain a vendor-style label.
+  const VENDOR_STYLE_LABELS = new Set([
+    "vendor style #",
+    "vendor style#",
+    "vendor style no",
+    "vendor style no.",
+    "vendor style number",
+    "vendor style",
+    "style #",
+    "style number",
+    "style no",
+    "vendor pn",
+    "vendor p/n",
+    "item #",
+    "item number",
+  ])
+
   let headerRowNum = -1
+  // Collect all unique cell values seen (for diagnostic error message)
+  const allCellValues = new Set<string>()
   ws.eachRow((row, rowNum) => {
     if (headerRowNum !== -1) return
     row.eachCell((cell) => {
-      if (cellStr(cell) === "Vendor Style #") headerRowNum = rowNum
+      const v = cellStr(cell)
+      if (v) allCellValues.add(v)
+      if (VENDOR_STYLE_LABELS.has(v.toLowerCase())) headerRowNum = rowNum
     })
   })
   if (headerRowNum === -1) {
+    // Write diagnostics so we can see what columns ARE present
+    try {
+      const allVals = [...allCellValues].slice(0, 50).join(" | ")
+      writeFileSync(join(process.cwd(), "bp-debug.json"), JSON.stringify({ error: "no vendor style col", allCellValues: allVals }, null, 2))
+    } catch { /* ignore */ }
     throw new Error(
       "Could not find 'Vendor Style #' column — is this a Buy Plan Excel?"
     )
@@ -82,16 +107,31 @@ export async function parseBuyPlan(buffer: Buffer): Promise<ParsedBuyPlan> {
 
   // ── 2. Build column-index map from the header row ─────────────────────────
   const colMap: Record<string, number> = {}
+  const colMapLower: Record<string, number> = {}
   ws.getRow(headerRowNum).eachCell((cell, colNum) => {
     const label = cellStr(cell)
-    if (label) colMap[label] = colNum
+    if (label) {
+      colMap[label] = colNum
+      colMapLower[label.toLowerCase()] = colNum
+    }
   })
 
-  const vendorStyleCol = colMap["Vendor Style #"]
-  const descriptionCol = colMap["Kohl's Style Description"]
-  const colorCodeCol = colMap["Vendor Color"]
-  const firstCostCol = colMap["First Cost"]
-  const poNumberCol = colMap["PO"] ?? null
+  // Vendor Style # — try several known label variants
+  const vendorStyleCol = Object.entries(colMapLower).find(([k]) => VENDOR_STYLE_LABELS.has(k))?.[1]
+
+  // Description — "Kohl's Style Description" or common variants
+  const DESCRIPTION_LABELS = ["kohl's style description", "style description", "description", "item description", "product description"]
+  const descriptionCol = DESCRIPTION_LABELS.map(l => colMapLower[l]).find(v => v != null)
+
+  // Color — "Vendor Color" or common variants
+  const COLOR_LABELS = ["vendor color", "color", "colour", "color code", "colour code"]
+  const colorCodeCol = COLOR_LABELS.map(l => colMapLower[l]).find(v => v != null)
+
+  // First Cost — "First Cost" or common variants
+  const FIRST_COST_LABELS = ["first cost", "unit cost", "cost", "wholesale", "cost price"]
+  const firstCostCol = FIRST_COST_LABELS.map(l => colMapLower[l]).find(v => v != null)
+
+  const poNumberCol = colMapLower["po"] ?? null
 
   // ── 2b. Locate the retail-cost column ────────────────────────────────────
   // The "retail" header may appear in any row of the header block (rows 1 →
