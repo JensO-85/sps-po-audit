@@ -62,8 +62,7 @@ export async function parseBuyPlan(buffer: Buffer): Promise<ParsedBuyPlan> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await workbook.xlsx.load(buffer as any)
 
-  const ws = workbook.worksheets[0]
-  if (!ws) throw new Error("Buy Plan Excel has no worksheets")
+  if (workbook.worksheets.length === 0) throw new Error("Buy Plan Excel has no worksheets")
 
   // ── 1. Find the column-header row ─────────────────────────────────────────
   //   Scan every row until we find one whose cells contain a vendor-style label.
@@ -83,18 +82,29 @@ export async function parseBuyPlan(buffer: Buffer): Promise<ParsedBuyPlan> {
     "item number",
   ])
 
+  // Search all worksheets for the one that contains a vendor-style header row
+  let ws: ExcelJS.Worksheet | null = null
   let headerRowNum = -1
-  // Collect all unique cell values seen (for diagnostic error message)
   const allCellValues = new Set<string>()
-  ws.eachRow((row, rowNum) => {
-    if (headerRowNum !== -1) return
-    row.eachCell((cell) => {
-      const v = cellStr(cell)
-      if (v) allCellValues.add(v)
-      if (VENDOR_STYLE_LABELS.has(v.toLowerCase())) headerRowNum = rowNum
+
+  for (const sheet of workbook.worksheets) {
+    let found = -1
+    sheet.eachRow((row, rowNum) => {
+      if (found !== -1) return
+      row.eachCell((cell) => {
+        const v = cellStr(cell)
+        if (v) allCellValues.add(v)
+        if (VENDOR_STYLE_LABELS.has(v.toLowerCase())) found = rowNum
+      })
     })
-  })
-  if (headerRowNum === -1) {
+    if (found !== -1) {
+      ws = sheet
+      headerRowNum = found
+      break
+    }
+  }
+
+  if (!ws || headerRowNum === -1) {
     // Write diagnostics so we can see what columns ARE present
     try {
       const allVals = [...allCellValues].slice(0, 50).join(" | ")
